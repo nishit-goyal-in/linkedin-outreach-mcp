@@ -553,6 +553,62 @@ const tools: Tool[] = [
 
   // Posts
   {
+    name: 'search_posts',
+    description: 'Search LinkedIn feed/posts by keyword. Returns posts with text, author, engagement metrics (reactions, comments, reposts), and share URL. Powerful for finding parents discussing a topic, SLPs posting in your niche, or potential outreach targets based on their public content. For time-filtering or author-filtering, pass a fully-formed LinkedIn content-search URL via `url` (e.g., copy from linkedin.com/search/results/content/?keywords=...&datePosted=%22past-month%22).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'LinkedIn content-search URL (e.g., from linkedin.com/search/results/content/?keywords=...). If provided, other params are ignored.',
+        },
+        keywords: {
+          type: 'string',
+          description: 'Search keywords (e.g., "speech delay toddler", "early intervention parent")',
+        },
+        posted_within: {
+          type: 'string',
+          enum: ['past_24h', 'past_week', 'past_month'],
+          description: 'Limit to posts within a recent time window',
+        },
+        sort_by: {
+          type: 'string',
+          enum: ['relevance', 'date_posted'],
+          description: 'Sort order (default: relevance)',
+        },
+        from_member: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter to posts authored by specific LinkedIn member URNs',
+        },
+        from_company: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter to posts from specific company URNs',
+        },
+        mentions_member: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter to posts that mention specific member URNs',
+        },
+        mentions_company: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter to posts that mention specific company URNs',
+        },
+        cursor: {
+          type: 'string',
+          description: 'Pagination cursor from a previous response',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results to return (default: 10)',
+          default: 10,
+        },
+      },
+    },
+  },
+  {
     name: 'get_user_posts',
     description: 'Get recent posts from a LinkedIn user. Use this to check if someone is posting about hiring, company updates, etc.',
     inputSchema: {
@@ -1644,6 +1700,76 @@ async function handleGetChatMessages(args: Record<string, unknown>): Promise<unk
   };
 }
 
+async function handleSearchPosts(args: Record<string, unknown>): Promise<unknown> {
+  const limitCheck = checkRateLimit('search');
+  if (!limitCheck.allowed) {
+    return { error: limitCheck.message, rate_limit: limitCheck };
+  }
+
+  const accountId = getAccountId();
+
+  try {
+    const results = await unipile.searchPosts(accountId, {
+      url: args.url as string | undefined,
+      keywords: args.keywords as string | undefined,
+      posted_within: args.posted_within as 'past_24h' | 'past_week' | 'past_month' | undefined,
+      sort_by: args.sort_by as 'relevance' | 'date_posted' | undefined,
+      from_member: args.from_member as string[] | undefined,
+      from_company: args.from_company as string[] | undefined,
+      mentions_member: args.mentions_member as string[] | undefined,
+      mentions_company: args.mentions_company as string[] | undefined,
+      cursor: args.cursor as string | undefined,
+    });
+
+    db.incrementRateLimit('search');
+
+    const limit = (args.limit as number) || 10;
+    const posts = results.items.slice(0, limit);
+
+    db.logAction({
+      action_type: 'post_search',
+      payload: { args },
+      response: { count: posts.length },
+      status: 'success',
+    });
+
+    return {
+      count: posts.length,
+      posts: posts.map(p => ({
+        social_id: p.social_id,
+        type: p.type,
+        share_url: p.share_url,
+        text: p.text,
+        date: p.date,
+        parsed_datetime: p.parsed_datetime,
+        reaction_count: p.reaction_count,
+        comment_count: p.comment_count,
+        repost_count: p.repost_count,
+        impressions_count: p.impressions_count,
+        is_repost: p.is_repost,
+        author: p.author ? {
+          id: p.author.id,
+          public_identifier: p.author.public_identifier,
+          name: p.author.name,
+          headline: p.author.headline,
+          is_company: p.author.is_company,
+        } : undefined,
+      })),
+      has_more: results.has_more,
+      cursor: results.cursor,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    db.logAction({
+      action_type: 'post_search',
+      payload: { args },
+      status: 'failed',
+      error_message: errorMessage,
+    });
+    throw error;
+  }
+}
+
 async function handleGetUserPosts(args: Record<string, unknown>): Promise<unknown> {
   const accountId = getAccountId();
   const userId = args.user_id as string;
@@ -1903,6 +2029,7 @@ const toolHandlers: Record<string, (args: Record<string, unknown>) => Promise<un
   search_linkedin: handleSearchLinkedin,
   search_companies: handleSearchCompanies,
   search_jobs: handleSearchJobs,
+  search_posts: handleSearchPosts,
   get_profile: handleGetProfile,
   get_company_profile: handleGetCompanyProfile,
   get_search_parameters: handleGetSearchParameters,

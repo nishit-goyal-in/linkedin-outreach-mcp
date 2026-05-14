@@ -926,6 +926,124 @@ export async function createPost(
 // Note: reactToPost and commentOnPost removed - endpoints return 404 in Unipile API
 // These features may be available via the raw route (/api/v1/linkedin) in the future
 
+// ============ Post Search ============
+
+export interface PostSearchParams {
+  url?: string;                // Paste a LinkedIn content-search URL; other params ignored if set
+  keywords?: string;
+  posted_within?: 'past_24h' | 'past_week' | 'past_month';
+  sort_by?: 'relevance' | 'date_posted';
+  from_member?: string[];      // LinkedIn member IDs (urn:li:fsd_profile:...) to filter posts by
+  from_company?: string[];     // Company URNs (urn:li:fsd_company:...) to filter posts by
+  mentions_member?: string[];
+  mentions_company?: string[];
+  cursor?: string;
+}
+
+export interface PostAuthor {
+  id?: string;
+  public_identifier?: string;
+  name?: string;
+  is_company?: boolean;
+  headline?: string;
+  profile_picture_url?: string;
+}
+
+export interface PostSearchResult {
+  id: string;
+  social_id: string;           // urn:li:activity:... — used for get_post, comments, reactions
+  type: string;                // POST | REPOST | etc.
+  share_url: string;
+  text: string;
+  date: string;                // relative (e.g., "1w")
+  parsed_datetime?: string;    // ISO 8601
+  reaction_count: number;
+  comment_count: number;
+  repost_count: number;
+  impressions_count?: number;
+  is_repost?: boolean;
+  author?: PostAuthor;
+  mentions?: unknown[];
+  attachments?: unknown[];
+}
+
+export interface PostSearchResponse {
+  items: PostSearchResult[];
+  cursor?: string;
+  has_more: boolean;
+}
+
+export async function searchPosts(
+  accountId: string,
+  params: PostSearchParams
+): Promise<PostSearchResponse> {
+  const body: Record<string, unknown> = {
+    api: 'classic',
+    category: 'posts',
+  };
+
+  if (params.url) {
+    body.url = params.url;
+  } else if (params.keywords) {
+    body.keywords = params.keywords;
+  }
+
+  // NOTE: Unipile's "Classic - Posts" schema rejects date_posted/sort_by/from_member with HTTP 400.
+  // For time-filtering or author-filtering today, pass a fully-formed LinkedIn content-search URL
+  // via the `url` param (with f_TPR=r604800 etc. baked in). Verifying the exact valid post-search
+  // filter field names is a follow-up; the above params are documented but currently inactive.
+
+  if (params.cursor) {
+    body.cursor = params.cursor;
+  }
+
+  const endpoint = `/linkedin/search?account_id=${encodeURIComponent(accountId)}`;
+
+  const response = await apiRequest<{
+    object: string;
+    items: Array<{
+      id?: string | number;
+      social_id?: string;
+      type?: string;
+      share_url?: string;
+      text?: string;
+      date?: string;
+      parsed_datetime?: string;
+      reaction_counter?: number;
+      comment_counter?: number;
+      repost_counter?: number;
+      impressions_counter?: number;
+      is_repost?: boolean;
+      author?: PostAuthor;
+      mentions?: unknown[];
+      attachments?: unknown[];
+    }>;
+    cursor?: string;
+  }>('POST', endpoint, body);
+
+  return {
+    items: (response.items || []).map(item => ({
+      id: String(item.id ?? item.social_id ?? ''),
+      social_id: item.social_id || String(item.id ?? ''),
+      type: item.type || 'POST',
+      share_url: item.share_url || '',
+      text: item.text || '',
+      date: item.date || '',
+      parsed_datetime: item.parsed_datetime,
+      reaction_count: item.reaction_counter ?? 0,
+      comment_count: item.comment_counter ?? 0,
+      repost_count: item.repost_counter ?? 0,
+      impressions_count: item.impressions_counter,
+      is_repost: item.is_repost,
+      author: item.author,
+      mentions: item.mentions,
+      attachments: item.attachments,
+    })),
+    cursor: response.cursor,
+    has_more: !!response.cursor,
+  };
+}
+
 // ============ Account Info ============
 
 export interface AccountInfo {
